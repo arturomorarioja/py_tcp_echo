@@ -1,5 +1,6 @@
 import socket
 import threading
+import time
 from typing import Tuple
 
 HOST = '127.0.0.1'
@@ -8,27 +9,38 @@ BACKLOG = 50
 RECV_BUF = 4096
 
 
-def handle_client(conn: socket.socket, addr: Tuple[str, int]) -> None:
+def handle_client(conn: socket.socket, addr: Tuple[str, int], conn_establish_ms: float) -> None:
     """
-    Handles one client connection. Echoes back any bytes received until EOF.
-    Connection is closed by the client or when no data is received.
+    Handles one client connection.
+
+    Reads all data until the client closes the connection.
+    Sends back a response with a first line indicating the connection
+    establishing time in milliseconds, followed by the original bytes.
     """
     try:
+        chunks = []
         while True:
             data = conn.recv(RECV_BUF)
             if not data:
                 break
-            conn.sendall(data)
+            chunks.append(data)
+
+        if chunks:
+            payload = b''.join(chunks)
+            header = f'CONN_MS:{conn_establish_ms:.3f}\n'.encode('ascii')
+            response = header + payload
+            conn.sendall(response)
     finally:
         conn.close()
 
 
 def serve(stop_event: threading.Event, host: str = HOST, port: int = PORT) -> None:
     """
-    Starts a multi-threaded TCP echo server.
-    The OS chooses a free port if port is 0.
-    The loop ends when stop_event is set. Closing the listening socket
-    unblocks accept.
+    Starts a TCP echo server.
+
+    For each accepted connection, the time spent in accept() is measured
+    as the connection establishing time and later reported to the client.
+    The loop ends when stop_event is set.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -36,26 +48,29 @@ def serve(stop_event: threading.Event, host: str = HOST, port: int = PORT) -> No
         s.listen(BACKLOG)
 
         actual_host, actual_port = s.getsockname()
-        print(f'Echo server listening on {actual_host}:{actual_port}')
-        print('Start the client with that port. Press Enter here to stop the server.')
+        print(f'TCP echo server listening on {actual_host}:{actual_port}')
+        print('Start the TCP client with that port. Press Enter here to stop the server.')
 
-        # Store listening socket on the event for possible external access if needed
-        # (not strictly necessary for this exercise).
         while not stop_event.is_set():
             try:
                 s.settimeout(1.0)
+                start = time.perf_counter()
                 conn, addr = s.accept()
+                end = time.perf_counter()
             except socket.timeout:
                 continue
             except OSError:
-                # Socket closed while waiting in accept
                 break
 
-            t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
+            conn_establish_ms = (end - start) * 1000.0
+            t = threading.Thread(
+                target=handle_client,
+                args=(conn, addr, conn_establish_ms),
+                daemon=True
+            )
             t.start()
 
-        # Exiting the with-block closes the listening socket
-        print('Server shutting down.')
+        print('TCP server shutting down.')
 
 
 if __name__ == '__main__':
@@ -64,7 +79,7 @@ if __name__ == '__main__':
     server_thread.start()
 
     try:
-        input()    # Waits until the user presses Enter
+        input()
     finally:
         stop_event.set()
         server_thread.join()
